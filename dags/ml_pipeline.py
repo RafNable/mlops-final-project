@@ -7,62 +7,71 @@ from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score, classification_report
 from evidently.report import Report
 from evidently.metric_preset import DataDriftPreset
+from evidently.metrics import DataDriftTable
+from sklearn.preprocessing import OneHotEncoder
 
 # --- 1️⃣ Data Ingestion ---
-@op(out=Out(pd.DataFrame))
+@op
 def load_data():
-    """Load the dataset from CSV."""
-    dataset_path = "../data/WA_Fn-UseC_-HR-Employee-Attrition.csv"
+    # Get the absolute path to ensure Dagster finds the file
+    dataset_path = os.path.abspath("data/WA_Fn-UseC_-HR-Employee-Attrition.csv")
+
+    # Load the dataset
     df = pd.read_csv(dataset_path)
     return df
 
 # --- 2️⃣ Data Transformation ---
-@op(ins={"df": In(pd.DataFrame)}, out=Out(pd.DataFrame))
-def preprocess_data(df):
-    """Preprocess data: handle missing values, encode categorical features, scale numerical features."""
-    from sklearn.preprocessing import LabelEncoder, StandardScaler
 
-    # Handle missing values
-    df.fillna(df.median(numeric_only=True), inplace=True)
+@op(out={
+    "X_train": Out(pd.DataFrame),
+    "X_test": Out(pd.DataFrame),
+    "y_train": Out(pd.Series),
+    "y_test": Out(pd.Series),
+})
+def preprocess_data(df: pd.DataFrame):
+    target_column = "Attrition"
 
-    # Encode categorical columns
-    categorical_cols = df.select_dtypes(include=['object']).columns
-    for col in categorical_cols:
-        df[col] = LabelEncoder().fit_transform(df[col])
+    # Separate features and target
+    X = df.drop(columns=[target_column])
+    y = df[target_column]
 
-    # Scale numerical features
-    numerical_cols = df.select_dtypes(include=['int64', 'float64']).columns
-    df[numerical_cols] = StandardScaler().fit_transform(df[numerical_cols])
+    # Convert categorical variables using OneHotEncoder
+    categorical_cols = X.select_dtypes(include=["object"]).columns
+    encoder = OneHotEncoder(handle_unknown="ignore", sparse_output=False)
+    
+    X_encoded = pd.DataFrame(encoder.fit_transform(X[categorical_cols]))
+    X_encoded.columns = encoder.get_feature_names_out(categorical_cols)
 
-    return df
+    # Drop old categorical columns and replace them with encoded features
+    X = X.drop(columns=categorical_cols)
+    X = pd.concat([X, X_encoded], axis=1)
 
-# --- 3️⃣ Model Training ---
-@op(ins={"df": In(pd.DataFrame)}, out=Out(str))
-def train_model(df):
-    """Train a Random Forest model and save it as a file."""
-    X = df.drop("Attrition", axis=1)
-    y = df["Attrition"].astype(int)
-
+    # Train-test split
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
 
-    # Train model
+    return X_train, X_test, y_train, y_test  # ✅ Return as a tuple
+
+
+# --- 3️⃣ Model Training ---
+@op(ins={"X_train": In(pd.DataFrame), "y_train": In(pd.Series)}, out=Out(str))
+def train_model(X_train, y_train):
+    # Define model save path
+    model_dir = os.path.abspath("models")
+    model_path = os.path.join(model_dir, "random_forest_model.pkl")
+    os.makedirs(model_dir, exist_ok=True)
+
+    # Train a simple Random Forest model
     model = RandomForestClassifier(n_estimators=100, random_state=42)
     model.fit(X_train, y_train)
 
-    # Save model
-    model_path = "../models/random_forest_model.pkl"
+    # Save the trained model
     joblib.dump(model, model_path)
     return model_path
 
 # --- 4️⃣ Model Validation ---
-@op(ins={"model_path": In(str), "df": In(pd.DataFrame)}, out=Out(str))
-def validate_model(model_path, df):
+@op(ins={"model_path": In(str), "X_test": In(pd.DataFrame), "y_test": In(pd.Series)}, out=Out(str))
+def validate_model(model_path, X_test, y_test):
     """Validate model performance on test set."""
-    X = df.drop("Attrition", axis=1)
-    y = df["Attrition"].astype(int)
-
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
-
     # Load model
     model = joblib.load(model_path)
 
@@ -78,22 +87,31 @@ def validate_model(model_path, df):
 
     return f"Accuracy: {accuracy:.4f}"
 
+
 # --- 5️⃣ Drift Detection ---
-@op(ins={"df": In(pd.DataFrame)}, out=Out(str))
-def detect_drift(df):
-    """Generate a data drift report using Evidently AI."""
-    drift_report = Report(metrics=[DataDriftPreset()])
-    drift_report.run(reference_data=df.sample(frac=0.8), current_data=df.sample(frac=0.2))
+@op
+def detect_drift(reference_data: pd.DataFrame, current_data: pd.DataFrame):
+    drift_report = Report(metrics=[DataDriftTable()])
+    drift_report.run(reference_data=reference_data, current_data=current_data)
     
-    report_path = "../reports/data_drift_report.html"
+    report_dir = os.path.abspath("reports")
+    os.makedirs(report_dir, exist_ok=True)  # Ensure reports directory exists
+
+    report_path = os.path.join(report_dir, "data_drift_report.html")
     drift_report.save_html(report_path)
-    return report_path
+    
+    return report_path  # Ensure Dagster knows this step has output
+
 
 # --- 🚀 Define the Dagster Job ---
 @job
 def ml_pipeline():
     raw_data = load_data()
-    processed_data = preprocess_data(raw_data)
-    model_path = train_model(processed_data)
-    validate_model(model_path, processed_data)
-    detect_drift(processed_data)
+    
+    # Unpack outputs correctly
+    X_train, X_test, y_train, y_test = preprocess_data(raw_data)
+
+    model_path = train_model(X_train, y_train)
+    validate_model(model_path, X_test, y_test)
+
+    detect_drift(X_train, X_test)  # Ensure you're passing DataFrames
