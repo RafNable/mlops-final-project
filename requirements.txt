@@ -20,7 +20,7 @@ dagit==1.4.17
 dagster==1.4.17
 dagster-ext-process==1.4.17
 dagster-graphql==1.4.17
-dagster-pandas==0.26.3
+# dagster-pandas==0.26.3
 dagster-pipes==1.10.3
 dagster-webserver==1.4.17
 debugpy==1.8.13
@@ -50,8 +50,8 @@ httpx==0.28.1
 humanfriendly==10.0
 idna==3.10
 ipykernel==6.29.5
-ipython==9.0.1
-ipython-pygments-lexers==1.1.1
+# ipython==9.0.1
+# ipython-pygments-lexers==1.1.1
 iterative-telemetry==0.0.10
 jedi==0.19.2
 jinja2==3.1.6
@@ -103,7 +103,7 @@ python-dateutil==2.9.0.post0
 python-dotenv==1.0.1
 pytz==2025.1
 pytzdata==2020.1
-pywin32==308
+# pywin32==308
 pyyaml==6.0.2
 pyzmq==26.2.1
 regex==2024.11.6
